@@ -2,7 +2,7 @@
    <name>audio_convert</name>
    <version>0.1.0</version>
    <description>
-      Outputs audio to a WAV file from a rosbag.
+      Outputs audio to a WAV file from a rosbag for timestamped audio data.
    </description>
    <maintainer email="simn.brodeur@gmail.com">Simon Brodeur</maintainer>
    <author>Simon Brodeur</author>

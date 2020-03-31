@@ -10,15 +10,13 @@
 #include <boost/program_options.hpp>
 #include <unistd.h>
 
-#include "audio_common_msgs/AudioData.h"
+// #include "audio_common_msgs/AudioData.h"
+#include "audio_common_msgs/AudioDataStamped.h"
 
-namespace audio_transport
-{
-  class RosGstConvert
-  {
+namespace audio_transport {
+  class RosGstConvert {
     public:
-      RosGstConvert(const std::string& location)
-      {
+      RosGstConvert(const std::string& input_format, const std::string& location) {
         GstPad *audiopad;
 
         _loop = g_main_loop_new(NULL, false);
@@ -28,81 +26,92 @@ namespace audio_transport
         _source = gst_element_factory_make("appsrc", "app_source");
         g_object_set (G_OBJECT(_source), "stream-type", 0, "format", GST_FORMAT_TIME, NULL);
         g_object_set( G_OBJECT(_source), "block", TRUE, NULL);
-        gst_bin_add( GST_BIN(_pipeline), _source);
-        
-        _queue = gst_element_factory_make("queue", NULL);
-        g_object_set( G_OBJECT(_queue), "max-size-buffers", 0, NULL);
-        g_object_set( G_OBJECT(_queue), "max-size-time", 0, NULL);
-        g_object_set( G_OBJECT(_queue), "max-size-bytes", 0, NULL);
-        g_object_set( G_OBJECT(_queue), "silent", TRUE, NULL);
-        
-        gst_bin_add( GST_BIN(_pipeline), _queue);
-        if (gst_element_link(_source, _queue) != TRUE)
-		{
-			std::cout << "Error occured in linking audio queue \n";
-			exit(1);
-		}
 
-        _decoder = gst_element_factory_make("decodebin", "decoder");
-		g_signal_connect(_decoder, "pad-added", G_CALLBACK(cb_newpad),this);
-		gst_bin_add( GST_BIN(_pipeline), _decoder);
-		if (gst_element_link(_queue, _decoder) != TRUE)
-		{
-			std::cout << "Error occured in linking decoder \n";
-			exit(1);
-		}
-		          
-		_audio = gst_bin_new("audiobin");
-		_convert = gst_element_factory_make("audioconvert", "convert");
-		_encoder = gst_element_factory_make("wavenc", "encoder");
-		audiopad = gst_element_get_static_pad(_convert, "sink");
-		
+		// Make the file sink
 		_sink = gst_element_factory_make("filesink", "sink");
 		g_object_set( G_OBJECT(_sink), "location", location.c_str(), NULL);
-		
-		gst_bin_add_many( GST_BIN(_audio), _convert, _encoder, _sink, NULL);
-		if (gst_element_link_many (_convert, _encoder, _sink, NULL) != TRUE)
-		{
-			std::cout << "Error occured in linking audio converter, encoder and sink \n";
-			exit(1);
-		}
-		
-		gst_element_add_pad(_audio, gst_ghost_pad_new("sink", audiopad));
-		gst_object_unref(audiopad);
 
-		gst_bin_add(GST_BIN(_pipeline), _audio);
+		if (input_format == "mp3") {
+			gst_bin_add( GST_BIN(_pipeline), _source);
+
+			_queue = gst_element_factory_make("queue", NULL);
+			g_object_set( G_OBJECT(_queue), "max-size-buffers", 0, NULL);
+			g_object_set( G_OBJECT(_queue), "max-size-time", 0, NULL);
+			g_object_set( G_OBJECT(_queue), "max-size-bytes", 0, NULL);
+			g_object_set( G_OBJECT(_queue), "silent", TRUE, NULL);
+			
+			gst_bin_add( GST_BIN(_pipeline), _queue);
+			if (gst_element_link(_source, _queue) != TRUE) {
+				std::cout << "Error occured in linking audio queue \n";
+				exit(1);
+			}
+
+			_decoder = gst_element_factory_make("decodebin", "decoder");
+			g_signal_connect(_decoder, "pad-added", G_CALLBACK(cb_newpad),this);
+			gst_bin_add( GST_BIN(_pipeline), _decoder);
+			gst_element_link(_source, _decoder);
+
+			_audio = gst_bin_new("audiobin");
+			_convert = gst_element_factory_make("audioconvert", "convert");
+			_encoder = gst_element_factory_make("wavenc", "encoder");
+			audiopad = gst_element_get_static_pad(_convert, "sink");
+
+			gst_bin_add_many( GST_BIN(_audio), _convert, _encoder, _sink, NULL);
+			if (gst_element_link_many (_convert, _encoder, _sink, NULL) != TRUE) {
+				std::cout << "Error occured in linking audio converter, encoder and sink \n";
+				exit(1);
+			}
+			gst_element_add_pad(_audio, gst_ghost_pad_new("sink", audiopad));
+			gst_object_unref(audiopad);
+
+			gst_bin_add(GST_BIN(_pipeline), _audio);
+		} else if (input_format == "wave") {
+			GstCaps *caps;
+			caps = gst_caps_from_string("audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved");
+			g_object_set( G_OBJECT(_source), "caps", caps, NULL);
+			gst_caps_unref(caps);
+
+			_convert = gst_element_factory_make("audioconvert", "convert");
+			_encoder = gst_element_factory_make("wavenc", "encoder");
+
+			g_object_set (G_OBJECT (_source), "format", GST_FORMAT_TIME, NULL);
+			gst_bin_add_many( GST_BIN(_pipeline), _source, _convert, _encoder, _sink, NULL);
+			
+			if (gst_element_link_many (_source, _convert, _encoder, _sink, NULL) != TRUE) {
+				std::cout << "Error occured in linking audio converter, encoder and sink \n";
+				exit(1);
+			}
+		} else {
+			ROS_ERROR("Unsupported format: %s", input_format.c_str());
+		}
 		
         gst_element_set_state(GST_ELEMENT(_pipeline), GST_STATE_PLAYING);
 
         _gst_thread = boost::thread( boost::bind(g_main_loop_run, _loop) );
       }
 
-      void close()
-      {
-    	  /* cleanup */
-    	  gst_element_set_state (_pipeline, GST_STATE_NULL);
-    	  gst_object_unref (GST_OBJECT (_pipeline));
-      }
+	void close() {
+		/* cleanup */
+		gst_element_set_state (_pipeline, GST_STATE_NULL);
+		gst_object_unref (GST_OBJECT (_pipeline));
+	}
       
-      void onAudio(const audio_common_msgs::AudioDataConstPtr &msg)
-      {
-        GstBuffer *buffer = gst_buffer_new_and_alloc(msg->data.size());
-        gst_buffer_fill(buffer, 0, &msg->data[0], msg->data.size());
-        GstFlowReturn ret;
+	void onAudio(const audio_common_msgs::AudioDataStampedConstPtr &msg) {
+		GstBuffer *buffer = gst_buffer_new_and_alloc(msg->data.size());
+		gst_buffer_fill(buffer, 0, &msg->data[0], msg->data.size());
+		GstFlowReturn ret;
 
-        ret = gst_app_src_push_buffer(GST_APP_SRC_CAST (_source), buffer);
-        if (ret != GST_FLOW_OK)
-        {
-        	std::cout << "Error occured in enqueing data into source \n";
-        }
-        //g_signal_emit_by_name(_source, "push-buffer", buffer, &ret);
-      }
+		ret = gst_app_src_push_buffer(GST_APP_SRC_CAST (_source), buffer);
+		if (ret != GST_FLOW_OK) {
+			std::cout << "Error occured in enqueing data into source \n";
+		}
+		//g_signal_emit_by_name(_source, "push-buffer", buffer, &ret);
+	}
 
     private:
       
       static void cb_newpad (GstElement *decodebin, GstPad *pad, 
-                                   gpointer data)
-		{
+                                   gpointer data) {
     	  RosGstConvert *client = reinterpret_cast<RosGstConvert*>(data);
 		
 		  GstCaps *caps;
@@ -154,6 +163,7 @@ int main(int argc, char **argv){
 
 	std::string input_rosbag = "input.bag";
 	std::string output_wav = "output.wav";
+	std::string input_format = "mp3";
 	std::string input_audio_topic = "/audio";
 
 	namespace po = boost::program_options;
@@ -162,7 +172,8 @@ int main(int argc, char **argv){
 	("help,h", "describe arguments")
 	("output,o", po::value(&output_wav), "set output WAV file")
 	("input,i", po::value(&input_rosbag), "set input rosbag file")
-	("input-audio-topic,t", po::value(&input_audio_topic), "set topic of the input audio_common_msgs/AudioData messages");
+	("input-format,f", po::value(&input_format), "set format of audio in bag [mp3 (default), wave]")
+	("input-audio-topic,t", po::value(&input_audio_topic), "set topic of the input audio_common_msgs/AudioDataStamped messages");
 
 	po::variables_map vm;
 	po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -173,16 +184,20 @@ int main(int argc, char **argv){
 		return 1;
 	}
 
+	if (!(input_format == "mp3" || input_format == "wave")) {
+		std::cout << "Error: Invalid Format: \"" << input_format <<"\"\n";
+		return 2;
+	}
+
 	rosbag::Bag input(input_rosbag, rosbag::bagmode::Read);
-	audio_transport::RosGstConvert client(output_wav);
+	audio_transport::RosGstConvert client(input_format, output_wav);
 
 	std::vector<std::string> topics;
 	topics.push_back(input_audio_topic);
 	rosbag::View view(input, rosbag::TopicQuery(topics));
-	BOOST_FOREACH(rosbag::MessageInstance const m, view)
-	{
-		audio_common_msgs::AudioDataConstPtr msg = m.instantiate<audio_common_msgs::AudioData>();
-		if (msg != NULL){
+	BOOST_FOREACH(rosbag::MessageInstance const m, view) {
+		audio_common_msgs::AudioDataStampedConstPtr msg = m.instantiate<audio_common_msgs::AudioDataStamped>();
+		if (msg != NULL) {
 			// Send data to client
 			client.onAudio(msg);
 			
